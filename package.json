@@ -1,0 +1,27 @@
+{
+  "name": "falgunixerox-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/falguni-xerox/falgunixerox-server.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/falguni-xerox/falgunixerox-server/issues"
+  },
+  "homepage": "https://github.com/falguni-xerox/falgunixerox-server#readme",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "multer": "^2.2.0"
+  }
+}
