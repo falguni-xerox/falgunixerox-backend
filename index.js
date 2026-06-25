@@ -1,32 +1,59 @@
 const express = require('express');
-const multer = require('multer');
 const cors = require('cors');
+const { UTApi } = require('uploadthing/server');
+const { createRouteHandler } = require("uploadthing/server"); // Uploadthing માટે જરૂરી
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3000;
-
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// File Upload માટે Multer
-const upload = multer({ storage: multer.memoryStorage() });
+const utapi = new UTApi();
 
-// Test Route
-app.get('/', (req, res) => {
-  res.send('Falgunixerox Server Live 🔥');
-});
-
-// File Upload Route - Uploadthing માટે
-app.post('/upload', upload.single('file'), async (req, res) => {
+// તારો જૂનો Manual Upload Route - એમ જ રહેવા દે
+app.post('/upload', async (req, res) => {
   try {
-    // અહીં પાછળથી Uploadthing નો Code નાખીશું
-    res.json({ message: 'File મળી ગઈ', filename: req.file.originalname });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    const { file } = req.body;
+    
+    if (!file) {
+      return res.status(400).json({ error: 'File required' });
+    }
+
+    const result = await utapi.uploadFilesFromBase64(file);
+    
+    if (result[0].error) {
+      return res.status(500).json({ error: result[0].error.message });
+    }
+
+    res.json({ 
+      success: true,
+      url: result[0].data.url,
+      name: result[0].data.name 
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+// આ નવો Route Uploadthing Frontend માટે - આનાથી 404 Fix થશે
+app.use("/api/uploadthing", createRouteHandler({
+  router: {
+    pdfUploader: {
+      middleware: async () => ({}),
+      onUploadComplete: async ({ file }) => {
+        console.log("Upload complete:", file.url);
+        return { uploadedBy: "Falgunixerox" };
+      },
+    },
+  },
+}));
+
+app.get('/', (req, res) => {
+  res.send('Falgunixerox Backend Running');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });
