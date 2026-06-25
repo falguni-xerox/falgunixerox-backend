@@ -1,50 +1,112 @@
-import express from 'express';
-import multer from 'multer';
-import cors from 'cors';
-import fs from 'fs';
-import path from 'path';
+import express from "express";
+import multer from "multer";
+import cors from "cors";
+import fs from "fs";
+import path from "path";
 
 const app = express();
 
-// તારો Vercel URL અહીં નાખ
-app.use(cors({ origin: 'https://falguni-xerox.vercel.app' }));
+const PORT = process.env.PORT || 10000;
 
-// Render માં ફક્ત /tmp માં જ File Save થાય
-const uploadDir = '/tmp/uploads';
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || "https://falgunixerox-frontend.vercel.app";
+
+const BACKEND_URL =
+  process.env.BACKEND_URL || "https://falgunixerox-server.onrender.com";
+
+// ✅ CORS Fix
+app.use(
+  cors({
+    origin: [
+      FRONTEND_URL,
+      "https://falgunixerox-frontend.vercel.app",
+      "https://falguni-xerox.vercel.app",
+      "http://localhost:5173",
+    ],
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type"],
+  })
+);
+
+app.use(express.json());
+
+// ✅ Render માં /tmp જ writable છે
+const uploadDir = "/tmp/uploads";
+
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+// ✅ Multer Storage
 const storage = multer.diskStorage({
-  destination: uploadDir,
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
   filename: (req, file, cb) => {
-    const uniqueName = Date.now() + '-' + file.originalname.replace(/\s+/g, '_');
+    const safeName = file.originalname
+      .replace(/\s+/g, "_")
+      .replace(/[^a-zA-Z0-9._-]/g, "");
+
+    const uniqueName = `${Date.now()}-${safeName}`;
     cb(null, uniqueName);
-  }
+  },
 });
 
-const upload = multer({ 
+const upload = multer({
   storage,
-  limits: { fileSize: 100 * 1024 * 1024 } // 100MB Limit
+  limits: {
+    fileSize: 100 * 1024 * 1024,
+  },
 });
 
-// Upload API
-app.post('/api/upload', upload.single('file'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'File નથી મળી' });
+// ✅ Test Route
+app.get("/", (req, res) => {
+  res.send("✅ Falguni Xerox Backend Running");
+});
+
+// ✅ Upload API
+app.post("/api/upload", upload.single("file"), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "File નથી મળી" });
+    }
+
+    const fileUrl = `${BACKEND_URL}/uploads/${req.file.filename}`;
+
+    return res.json({
+      success: true,
+      url: fileUrl,
+      filename: req.file.filename,
+      name: req.file.originalname,
+      size: req.file.size,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: "Upload failed",
+      details: error.message,
+    });
   }
-  
-  // Render ની Public URL બનાવ
-  const fileUrl = `https://તારો-backend.onrender.com/uploads/${req.file.filename}`;
-  res.json({ 
-    url: fileUrl, 
-    name: req.file.originalname,
-    size: req.file.size 
+});
+
+// ✅ Uploaded files public access
+app.use("/uploads", express.static(uploadDir));
+
+// ✅ Error Handler
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({
+      success: false,
+      error: err.message,
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    error: err.message || "Server error",
   });
 });
 
-// File Download કરવા માટે
-app.use('/uploads', express.static(uploadDir));
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`✅ Server ${PORT} પર ચાલુ`));
+app.listen(PORT, () => {
+  console.log(`✅ Server ${PORT} પર ચાલુ`);
+});
