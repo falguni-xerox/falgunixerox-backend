@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { UTApi } = require('uploadthing/server');
-const { createRouteHandler } = require("uploadthing/server"); // Uploadthing માટે જરૂરી
+
 require('dotenv').config();
 
 const app = express();
@@ -36,18 +35,6 @@ app.post('/upload', async (req, res) => {
   }
 });
 
-// આ નવો Route Uploadthing Frontend માટે - આનાથી 404 Fix થશે
-app.use("/api/uploadthing", createRouteHandler({
-  router: {
-    pdfUploader: {
-      middleware: async () => ({}),
-      onUploadComplete: async ({ file }) => {
-        console.log("Upload complete:", file.url);
-        return { uploadedBy: "Falgunixerox" };
-      },
-    },
-  },
-}));
 
 app.get('/', (req, res) => {
   res.send('Falgunixerox Backend Running');
