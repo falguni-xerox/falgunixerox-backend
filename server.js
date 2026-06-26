@@ -2,6 +2,7 @@ import express from "express";
 import multer from "multer";
 import cors from "cors";
 import fs from "fs";
+import { PDFDocument } from "pdf-lib";
 
 const app = express();
 
@@ -59,10 +60,18 @@ app.get("/", (req, res) => {
   res.send("Falguni Xerox Backend Running");
 });
 
-app.post("/api/upload", upload.single("file"), (req, res) => {
+app.post("/api/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "File not found" });
+    }
+
+    let pages = 1;
+
+    if (req.file.mimetype === "application/pdf") {
+      const pdfBytes = fs.readFileSync(req.file.path);
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      pages = pdfDoc.getPageCount();
     }
 
     const jobId = req.file.filename;
@@ -71,7 +80,7 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
     return res.json({
       success: true,
       jobId,
-      pages: 1,
+      pages,
       url: fileUrl,
       filename: req.file.filename,
       name: req.file.originalname,
