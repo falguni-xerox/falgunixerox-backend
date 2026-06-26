@@ -19,6 +19,8 @@ app.use(
     origin: [
       FRONTEND_URL,
       "https://falgunixerox-frontend.vercel.app",
+      "https://falgunixerox.in",
+      "https://www.falgunixerox.in",
       "https://falguni-xerox.vercel.app",
       "http://localhost:5173",
     ],
