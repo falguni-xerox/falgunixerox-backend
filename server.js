@@ -35,6 +35,8 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+const jobs = {};
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
@@ -77,6 +79,24 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
     const jobId = req.file.filename;
     const fileUrl = `${BACKEND_URL}/uploads/${req.file.filename}`;
 
+    jobs[jobId] = {
+      jobId,
+      token: null,
+      status: "uploaded",
+      fileUrl,
+      localPath: req.file.path,
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      size: req.file.size,
+      pages,
+      copies: 1,
+      printType: "single",
+      printRange: "all",
+      customPages: "",
+      createdAt: new Date().toISOString(),
+      printedAt: null,
+    };
+
     return res.json({
       success: true,
       jobId,
@@ -96,12 +116,62 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 });
 
 app.post("/api/jobs/:jobId/cash", (req, res) => {
+  const { copies, printType, printRange, customPages } = req.body;
+  const jobId = req.params.jobId;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({
+      success: false,
+      error: "Job not found",
+    });
+  }
+
   const token = Math.floor(1000 + Math.random() * 9000);
+
+  jobs[jobId] = {
+    ...jobs[jobId],
+    token,
+    status: "pending_print",
+    copies: Number(copies || 1),
+    printType: printType || "single",
+    printRange: printRange || "all",
+    customPages: customPages || "",
+  };
 
   return res.json({
     success: true,
     token,
-    jobId: req.params.jobId,
+    jobId,
+  });
+});
+
+app.get("/api/jobs/pending", (req, res) => {
+  const pendingJobs = Object.values(jobs).filter(
+    (job) => job.status === "pending_print"
+  );
+
+  return res.json({
+    success: true,
+    jobs: pendingJobs,
+  });
+});
+
+app.post("/api/jobs/:jobId/printed", (req, res) => {
+  const jobId = req.params.jobId;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({
+      success: false,
+      error: "Job not found",
+    });
+  }
+
+  jobs[jobId].status = "printed";
+  jobs[jobId].printedAt = new Date().toISOString();
+
+  return res.json({
+    success: true,
+    jobId,
   });
 });
 
