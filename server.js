@@ -2,7 +2,6 @@ import express from "express";
 import multer from "multer";
 import cors from "cors";
 import fs from "fs";
-import path from "path";
 
 const app = express();
 
@@ -12,9 +11,8 @@ const FRONTEND_URL =
   process.env.FRONTEND_URL || "https://falgunixerox-frontend.vercel.app";
 
 const BACKEND_URL =
-  process.env.BACKEND_URL || "https://falgunixerox-server.onrender.com";
+  process.env.BACKEND_URL || "https://falgunixerox-backend.onrender.com";
 
-// ✅ CORS Fix
 app.use(
   cors({
     origin: [
@@ -30,14 +28,12 @@ app.use(
 
 app.use(express.json());
 
-// ✅ Render માં /tmp જ writable છે
 const uploadDir = "/tmp/uploads";
 
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// ✅ Multer Storage
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
@@ -59,22 +55,23 @@ const upload = multer({
   },
 });
 
-// ✅ Test Route
 app.get("/", (req, res) => {
-  res.send("✅ Falguni Xerox Backend Running");
+  res.send("Falguni Xerox Backend Running");
 });
 
-// ✅ Upload API
 app.post("/api/upload", upload.single("file"), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: "File નથી મળી" });
+      return res.status(400).json({ error: "File not found" });
     }
 
+    const jobId = req.file.filename;
     const fileUrl = `${BACKEND_URL}/uploads/${req.file.filename}`;
 
     return res.json({
       success: true,
+      jobId,
+      pages: 1,
       url: fileUrl,
       filename: req.file.filename,
       name: req.file.originalname,
@@ -89,10 +86,31 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   }
 });
 
-// ✅ Uploaded files public access
+app.post("/api/jobs/:jobId/cash", (req, res) => {
+  const token = Math.floor(1000 + Math.random() * 9000);
+
+  return res.json({
+    success: true,
+    token,
+    jobId: req.params.jobId,
+  });
+});
+
+app.post("/api/jobs/:jobId/pay/checkout-order", (req, res) => {
+  return res.status(501).json({
+    success: false,
+    error: "Online payment is not configured yet",
+  });
+});
+
+app.post("/api/payment/verify", (req, res) => {
+  return res.json({
+    success: true,
+  });
+});
+
 app.use("/uploads", express.static(uploadDir));
 
-// ✅ Error Handler
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     return res.status(400).json({
@@ -108,5 +126,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ Server ${PORT} પર ચાલુ`);
+  console.log(`Server running on port ${PORT}`);
 });
