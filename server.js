@@ -9,7 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 const FRONTEND_URL =
-  process.env.FRONTEND_URL || "https://falgunixerox-frontend.vercel.app";
+  process.env.FRONTEND_URL || "https://falgunixerox.in";
 
 const BACKEND_URL =
   process.env.BACKEND_URL || "https://falgunixerox-backend.onrender.com";
@@ -52,13 +52,64 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: {
-    fileSize: 100 * 1024 * 1024,
-  },
+  limits: { fileSize: 100 * 1024 * 1024 },
 });
+
+function calculateAmount(job, copies, printType, printRange, customPages) {
+  const copyCount = Number(copies || 1);
+  let selectedPages = job.pages || 1;
+
+  if (printRange === "custom" && customPages) {
+    const pages = [];
+
+    String(customPages).split(",").forEach((part) => {
+      part = part.trim();
+
+      if (part.includes("-")) {
+        const [start, end] = part.split("-").map(Number);
+        if (start && end && start <= end) {
+          for (let i = start; i <= end; i++) pages.push(i);
+        }
+      } else {
+        const pageNum = Number(part);
+        if (pageNum) pages.push(pageNum);
+      }
+    });
+
+    selectedPages = [...new Set(pages)].filter(
+      (p) => p >= 1 && p <= job.pages
+    ).length;
+  }
+
+  const isDuplex =
+    printType === "duplex_long" || printType === "duplex_short";
+
+  const billableUnits = isDuplex
+    ? Math.ceil(selectedPages / 2)
+    : selectedPages;
+
+  const rate = selectedPages <= 5 ? 5 : isDuplex ? 3.5 : 3;
+
+  const amount = Math.round(billableUnits * rate * copyCount);
+
+  return {
+    selectedPages,
+    billableUnits,
+    rate,
+    amount,
+  };
+}
 
 app.get("/", (req, res) => {
   res.send("Falguni Xerox Backend Running");
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    success: true,
+    message: "Falguni Xerox Backend Running",
+    time: new Date().toISOString(),
+  });
 });
 
 app.post("/api/upload", upload.single("file"), async (req, res) => {
@@ -92,9 +143,13 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       printType: "single",
       printRange: "all",
       customPages: "",
+      selectedPages: pages,
       amount: 0,
+      price: 0,
+      payment: null,
       createdAt: new Date().toISOString(),
       cashCreatedAt: null,
+      cashPaidAt: null,
       printedAt: null,
     };
 
@@ -117,7 +172,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 });
 
 app.post("/api/jobs/:jobId/cash", (req, res) => {
-  const { copies, printType, printRange, customPages, amount } = req.body;
+  const { copies, printType, printRange, customPages } = req.body;
   const jobId = req.params.jobId;
 
   if (!jobs[jobId]) {
@@ -127,17 +182,15 @@ app.post("/api/jobs/:jobId/cash", (req, res) => {
     });
   }
 
-  if (jobs[jobId].token) {
-    return res.json({
-      success: true,
-      token: jobs[jobId].token,
-      jobId,
-      amount: jobs[jobId].amount,
-      alreadyCreated: true,
-    });
-  }
+  const result = calculateAmount(
+    jobs[jobId],
+    copies,
+    printType,
+    printRange,
+    customPages
+  );
 
-  const token = Math.floor(1000 + Math.random() * 9000);
+  const token = jobs[jobId].token || Math.floor(1000 + Math.random() * 9000);
 
   jobs[jobId] = {
     ...jobs[jobId],
@@ -147,15 +200,24 @@ app.post("/api/jobs/:jobId/cash", (req, res) => {
     printType: printType || "single",
     printRange: printRange || "all",
     customPages: customPages || "",
-    amount: Number(amount || 0),
-    cashCreatedAt: new Date().toISOString(),
+    selectedPages: result.selectedPages,
+    billableUnits: result.billableUnits,
+    rate: result.rate,
+    amount: result.amount,
+    price: result.amount,
+    payment: {
+      method: "cash",
+      status: "paid",
+    },
+    cashCreatedAt: jobs[jobId].cashCreatedAt || new Date().toISOString(),
+    cashPaidAt: new Date().toISOString(),
   };
 
   return res.json({
     success: true,
     token,
     jobId,
-    amount: jobs[jobId].amount,
+    amount: result.amount,
   });
 });
 
@@ -202,6 +264,84 @@ app.get("/api/jobs/recent", (req, res) => {
   return res.json({
     success: true,
     jobs: recentJobs,
+  });
+});
+
+app.get("/api/admin/orders", (req, res) => {
+  const orders = Object.values(jobs)
+    .filter((job) => job.token || job.status !== "uploaded")
+    .sort((a, b) => {
+      const ta = new Date(a.cashCreatedAt || a.createdAt).getTime();
+      const tb = new Date(b.cashCreatedAt || b.createdAt).getTime();
+      return tb - ta;
+    });
+
+  return res.json(orders);
+});
+
+app.post("/api/admin/orders/:jobId/status", (req, res) => {
+  const jobId = req.params.jobId;
+  const { status } = req.body;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({
+      success: false,
+      error: "Job not found",
+    });
+  }
+
+  jobs[jobId].status = status;
+
+  if (status === "printed" || status === "done") {
+    jobs[jobId].printedAt = new Date().toISOString();
+  }
+
+  return res.json({
+    success: true,
+    jobId,
+    status,
+  });
+});
+
+app.post("/api/admin/jobs/:jobId/cash-paid", (req, res) => {
+  const jobId = req.params.jobId;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({
+      success: false,
+      error: "Job not found",
+    });
+  }
+
+  jobs[jobId].status = "pending_print";
+  jobs[jobId].payment = {
+    method: "cash",
+    status: "paid",
+  };
+  jobs[jobId].cashPaidAt = new Date().toISOString();
+
+  return res.json({
+    success: true,
+    jobId,
+  });
+});
+
+app.post("/api/admin/jobs/:jobId/reprint", (req, res) => {
+  const jobId = req.params.jobId;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({
+      success: false,
+      error: "Job not found",
+    });
+  }
+
+  jobs[jobId].status = "pending_print";
+  jobs[jobId].reprintAt = new Date().toISOString();
+
+  return res.json({
+    success: true,
+    jobId,
   });
 });
 
