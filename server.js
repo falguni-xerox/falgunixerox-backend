@@ -2,6 +2,8 @@ import express from "express";
 import multer from "multer";
 import cors from "cors";
 import fs from "fs";
+import crypto from "crypto";
+import Razorpay from "razorpay";
 import { PDFDocument } from "pdf-lib";
 
 const app = express();
@@ -13,6 +15,11 @@ const FRONTEND_URL =
 
 const BACKEND_URL =
   process.env.BACKEND_URL || "https://falgunixerox-backend.onrender.com";
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
 
 app.use(
   cors({
@@ -109,6 +116,9 @@ app.get("/api/health", (req, res) => {
     success: true,
     message: "Falguni Xerox Backend Running",
     time: new Date().toISOString(),
+    razorpayConfigured: Boolean(
+      process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
+    ),
   });
 });
 
@@ -147,9 +157,13 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       amount: 0,
       price: 0,
       payment: null,
+      razorpayOrderId: null,
+      razorpayPaymentId: null,
       createdAt: new Date().toISOString(),
       cashCreatedAt: null,
       cashPaidAt: null,
+      onlineCreatedAt: null,
+      razorpayPaidAt: null,
       printedAt: null,
     };
 
@@ -221,6 +235,169 @@ app.post("/api/jobs/:jobId/cash", (req, res) => {
   });
 });
 
+app.post("/api/jobs/:jobId/pay/checkout-order", async (req, res) => {
+  try {
+    const { copies, printType, printRange, customPages } = req.body;
+    const jobId = req.params.jobId;
+
+    if (!jobs[jobId]) {
+      return res.status(404).json({
+        success: false,
+        error: "Job not found",
+      });
+    }
+
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      return res.status(500).json({
+        success: false,
+        error: "Razorpay keys not configured",
+      });
+    }
+
+    const result = calculateAmount(
+      jobs[jobId],
+      copies,
+      printType,
+      printRange,
+      customPages
+    );
+
+    if (result.amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid amount",
+      });
+    }
+
+    const order = await razorpay.orders.create({
+      amount: result.amount * 100,
+      currency: "INR",
+      receipt: jobId.slice(0, 40),
+      notes: {
+        jobId,
+        shop: "Falguni Xerox",
+      },
+    });
+
+    jobs[jobId] = {
+      ...jobs[jobId],
+      status: "razorpay_pending",
+      copies: Number(copies || 1),
+      printType: printType || "single",
+      printRange: printRange || "all",
+      customPages: customPages || "",
+      selectedPages: result.selectedPages,
+      billableUnits: result.billableUnits,
+      rate: result.rate,
+      amount: result.amount,
+      price: result.amount,
+      razorpayOrderId: order.id,
+      payment: {
+        method: "online",
+        status: "created",
+        orderId: order.id,
+      },
+      onlineCreatedAt: new Date().toISOString(),
+    };
+
+    return res.json({
+      success: true,
+      keyId: process.env.RAZORPAY_KEY_ID,
+      orderId: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      shopName: "Falguni Xerox",
+      jobId,
+    });
+  } catch (error) {
+    console.error("Razorpay order error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Payment order create failed",
+      details: error.message,
+    });
+  }
+});
+
+app.post("/api/payment/verify", (req, res) => {
+  try {
+    const {
+      jobId,
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+    } = req.body;
+
+    if (!jobs[jobId]) {
+      return res.status(404).json({
+        success: false,
+        error: "Job not found",
+      });
+    }
+
+    if (
+      jobs[jobId].status === "printed" ||
+      jobs[jobId].status === "pending_print"
+    ) {
+      return res.json({
+        success: true,
+        token: jobs[jobId].token,
+        jobId,
+        alreadyPaid: true,
+      });
+    }
+
+    if (jobs[jobId].razorpayOrderId !== razorpay_order_id) {
+      return res.status(400).json({
+        success: false,
+        error: "Order ID mismatch",
+      });
+    }
+
+    const expectedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest("hex");
+
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid payment signature",
+      });
+    }
+
+    const token = jobs[jobId].token || Math.floor(1000 + Math.random() * 9000);
+
+    jobs[jobId] = {
+      ...jobs[jobId],
+      token,
+      status: "pending_print",
+      payment: {
+        method: "online",
+        status: "paid",
+        orderId: razorpay_order_id,
+        paymentId: razorpay_payment_id,
+      },
+      razorpayPaymentId: razorpay_payment_id,
+      razorpayPaidAt: new Date().toISOString(),
+    };
+
+    return res.json({
+      success: true,
+      token,
+      jobId,
+      amount: jobs[jobId].amount,
+    });
+  } catch (error) {
+    console.error("Payment verify error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Payment verification failed",
+      details: error.message,
+    });
+  }
+});
+
 app.get("/api/jobs/pending", (req, res) => {
   const pendingJobs = Object.values(jobs).filter(
     (job) => job.status === "pending_print"
@@ -255,8 +432,12 @@ app.get("/api/jobs/recent", (req, res) => {
   const recentJobs = Object.values(jobs)
     .filter((job) => job.token)
     .sort((a, b) => {
-      const ta = new Date(a.cashCreatedAt || a.createdAt).getTime();
-      const tb = new Date(b.cashCreatedAt || b.createdAt).getTime();
+      const ta = new Date(
+        a.razorpayPaidAt || a.cashCreatedAt || a.createdAt
+      ).getTime();
+      const tb = new Date(
+        b.razorpayPaidAt || b.cashCreatedAt || b.createdAt
+      ).getTime();
       return tb - ta;
     })
     .slice(0, 30);
@@ -271,8 +452,12 @@ app.get("/api/admin/orders", (req, res) => {
   const orders = Object.values(jobs)
     .filter((job) => job.token || job.status !== "uploaded")
     .sort((a, b) => {
-      const ta = new Date(a.cashCreatedAt || a.createdAt).getTime();
-      const tb = new Date(b.cashCreatedAt || b.createdAt).getTime();
+      const ta = new Date(
+        a.razorpayPaidAt || a.onlineCreatedAt || a.cashCreatedAt || a.createdAt
+      ).getTime();
+      const tb = new Date(
+        b.razorpayPaidAt || b.onlineCreatedAt || b.cashCreatedAt || b.createdAt
+      ).getTime();
       return tb - ta;
     });
 
@@ -342,19 +527,6 @@ app.post("/api/admin/jobs/:jobId/reprint", (req, res) => {
   return res.json({
     success: true,
     jobId,
-  });
-});
-
-app.post("/api/jobs/:jobId/pay/checkout-order", (req, res) => {
-  return res.status(501).json({
-    success: false,
-    error: "Online payment is not configured yet",
-  });
-});
-
-app.post("/api/payment/verify", (req, res) => {
-  return res.json({
-    success: true,
   });
 });
 
