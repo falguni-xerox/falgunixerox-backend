@@ -40,16 +40,13 @@ if (!fs.existsSync(uploadDir)) {
 const jobs = {};
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
     const safeName = file.originalname
       .replace(/\s+/g, "_")
       .replace(/[^a-zA-Z0-9._-]/g, "");
 
-    const uniqueName = `${Date.now()}-${safeName}`;
-    cb(null, uniqueName);
+    cb(null, `${Date.now()}-${safeName}`);
   },
 });
 
@@ -95,7 +92,9 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       printType: "single",
       printRange: "all",
       customPages: "",
+      amount: 0,
       createdAt: new Date().toISOString(),
+      cashCreatedAt: null,
       printedAt: null,
     };
 
@@ -118,13 +117,23 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 });
 
 app.post("/api/jobs/:jobId/cash", (req, res) => {
-  const { copies, printType, printRange, customPages } = req.body;
+  const { copies, printType, printRange, customPages, amount } = req.body;
   const jobId = req.params.jobId;
 
   if (!jobs[jobId]) {
     return res.status(404).json({
       success: false,
       error: "Job not found",
+    });
+  }
+
+  if (jobs[jobId].token) {
+    return res.json({
+      success: true,
+      token: jobs[jobId].token,
+      jobId,
+      amount: jobs[jobId].amount,
+      alreadyCreated: true,
     });
   }
 
@@ -138,12 +147,15 @@ app.post("/api/jobs/:jobId/cash", (req, res) => {
     printType: printType || "single",
     printRange: printRange || "all",
     customPages: customPages || "",
+    amount: Number(amount || 0),
+    cashCreatedAt: new Date().toISOString(),
   };
 
   return res.json({
     success: true,
     token,
     jobId,
+    amount: jobs[jobId].amount,
   });
 });
 
@@ -174,6 +186,22 @@ app.post("/api/jobs/:jobId/printed", (req, res) => {
   return res.json({
     success: true,
     jobId,
+  });
+});
+
+app.get("/api/jobs/recent", (req, res) => {
+  const recentJobs = Object.values(jobs)
+    .filter((job) => job.token)
+    .sort((a, b) => {
+      const ta = new Date(a.cashCreatedAt || a.createdAt).getTime();
+      const tb = new Date(b.cashCreatedAt || b.createdAt).getTime();
+      return tb - ta;
+    })
+    .slice(0, 30);
+
+  return res.json({
+    success: true,
+    jobs: recentJobs,
   });
 });
 
