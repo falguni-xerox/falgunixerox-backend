@@ -10,8 +10,7 @@ const app = express();
 
 const PORT = process.env.PORT || 10000;
 
-const FRONTEND_URL =
-  process.env.FRONTEND_URL || "https://falgunixerox.in";
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://falgunixerox.in";
 
 const BACKEND_URL =
   process.env.BACKEND_URL || "https://falgunixerox-backend.onrender.com";
@@ -69,31 +68,31 @@ function calculateAmount(job, copies, printType, printRange, customPages) {
   if (printRange === "custom" && customPages) {
     const pages = [];
 
-    String(customPages).split(",").forEach((part) => {
-      part = part.trim();
+    String(customPages)
+      .split(",")
+      .forEach((part) => {
+        const clean = part.trim();
+        if (!clean) return;
 
-      if (part.includes("-")) {
-        const [start, end] = part.split("-").map(Number);
-        if (start && end && start <= end) {
-          for (let i = start; i <= end; i++) pages.push(i);
+        if (clean.includes("-")) {
+          const [start, end] = clean.split("-").map(Number);
+          if (start && end && start <= end) {
+            for (let i = start; i <= end; i++) pages.push(i);
+          }
+        } else {
+          const pageNum = Number(clean);
+          if (pageNum) pages.push(pageNum);
         }
-      } else {
-        const pageNum = Number(part);
-        if (pageNum) pages.push(pageNum);
-      }
-    });
+      });
 
     selectedPages = [...new Set(pages)].filter(
       (p) => p >= 1 && p <= job.pages
     ).length;
   }
 
-  const isDuplex =
-    printType === "duplex_long" || printType === "duplex_short";
+  const isDuplex = printType === "duplex_long" || printType === "duplex_short";
 
-  const billableUnits = isDuplex
-    ? Math.ceil(selectedPages / 2)
-    : selectedPages;
+  const billableUnits = isDuplex ? Math.ceil(selectedPages / 2) : selectedPages;
 
   const rate = selectedPages <= 5 ? 5 : isDuplex ? 3.5 : 3;
 
@@ -164,6 +163,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       cashPaidAt: null,
       onlineCreatedAt: null,
       razorpayPaidAt: null,
+      printingStartedAt: null,
       printedAt: null,
     };
 
@@ -337,7 +337,8 @@ app.post("/api/payment/verify", (req, res) => {
 
     if (
       jobs[jobId].status === "printed" ||
-      jobs[jobId].status === "pending_print"
+      jobs[jobId].status === "pending_print" ||
+      jobs[jobId].status === "printing"
     ) {
       return res.json({
         success: true,
@@ -403,6 +404,11 @@ app.get("/api/jobs/pending", (req, res) => {
     (job) => job.status === "pending_print"
   );
 
+  pendingJobs.forEach((job) => {
+    job.status = "printing";
+    job.printingStartedAt = new Date().toISOString();
+  });
+
   return res.json({
     success: true,
     jobs: pendingJobs,
@@ -433,11 +439,19 @@ app.get("/api/jobs/recent", (req, res) => {
     .filter((job) => job.token)
     .sort((a, b) => {
       const ta = new Date(
-        a.razorpayPaidAt || a.cashCreatedAt || a.createdAt
+        a.razorpayPaidAt ||
+          a.cashCreatedAt ||
+          a.printingStartedAt ||
+          a.createdAt
       ).getTime();
+
       const tb = new Date(
-        b.razorpayPaidAt || b.cashCreatedAt || b.createdAt
+        b.razorpayPaidAt ||
+          b.cashCreatedAt ||
+          b.printingStartedAt ||
+          b.createdAt
       ).getTime();
+
       return tb - ta;
     })
     .slice(0, 30);
@@ -453,11 +467,21 @@ app.get("/api/admin/orders", (req, res) => {
     .filter((job) => job.token || job.status !== "uploaded")
     .sort((a, b) => {
       const ta = new Date(
-        a.razorpayPaidAt || a.onlineCreatedAt || a.cashCreatedAt || a.createdAt
+        a.razorpayPaidAt ||
+          a.onlineCreatedAt ||
+          a.cashCreatedAt ||
+          a.printingStartedAt ||
+          a.createdAt
       ).getTime();
+
       const tb = new Date(
-        b.razorpayPaidAt || b.onlineCreatedAt || b.cashCreatedAt || b.createdAt
+        b.razorpayPaidAt ||
+          b.onlineCreatedAt ||
+          b.cashCreatedAt ||
+          b.printingStartedAt ||
+          b.createdAt
       ).getTime();
+
       return tb - ta;
     });
 
