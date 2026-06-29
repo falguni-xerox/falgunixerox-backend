@@ -61,36 +61,96 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 },
 });
 
-function calculateAmount(job, copies, printType, printRange, customPages) {
-  const copyCount = Number(copies || 1);
-  let selectedPages = job.pages || 1;
+function normalizePrintType(printType) {
+  const value = String(printType || "single").toLowerCase().trim();
 
-  if (printRange === "custom" && customPages) {
-    const pages = [];
-
-    String(customPages)
-      .split(",")
-      .forEach((part) => {
-        const clean = part.trim();
-        if (!clean) return;
-
-        if (clean.includes("-")) {
-          const [start, end] = clean.split("-").map(Number);
-          if (start && end && start <= end) {
-            for (let i = start; i <= end; i++) pages.push(i);
-          }
-        } else {
-          const pageNum = Number(clean);
-          if (pageNum) pages.push(pageNum);
-        }
-      });
-
-    selectedPages = [...new Set(pages)].filter(
-      (p) => p >= 1 && p <= job.pages
-    ).length;
+  if (
+    value === "duplex_long" ||
+    value === "duplex-long" ||
+    value === "long_edge" ||
+    value === "long-edge" ||
+    value === "duplexlong" ||
+    value === "duplexlongedge"
+  ) {
+    return "duplex_long";
   }
 
-  const isDuplex = printType === "duplex_long" || printType === "duplex_short";
+  if (
+    value === "duplex_short" ||
+    value === "duplex-short" ||
+    value === "short_edge" ||
+    value === "short-edge" ||
+    value === "duplexshort" ||
+    value === "duplexshortedge"
+  ) {
+    return "duplex_short";
+  }
+
+  return "single";
+}
+
+function parseCustomPages(customPages, totalPages) {
+  const pages = new Set();
+  const text = String(customPages || "").trim();
+
+  if (!text) return [];
+
+  text.split(",").forEach((part) => {
+    const clean = part.trim();
+    if (!clean) return;
+
+    if (clean.includes("-")) {
+      const [startRaw, endRaw] = clean.split("-");
+      const startNum = Number(startRaw.trim());
+      const endNum = Number(endRaw.trim());
+
+      if (Number.isInteger(startNum) && Number.isInteger(endNum)) {
+        const start = Math.max(1, Math.min(startNum, endNum));
+        const end = Math.min(totalPages, Math.max(startNum, endNum));
+
+        for (let i = start; i <= end; i++) {
+          pages.add(i);
+        }
+      }
+    } else {
+      const pageNum = Number(clean);
+
+      if (
+        Number.isInteger(pageNum) &&
+        pageNum >= 1 &&
+        pageNum <= totalPages
+      ) {
+        pages.add(pageNum);
+      }
+    }
+  });
+
+  return [...pages].sort((a, b) => a - b);
+}
+
+function calculateAmount(job, copies, printType, printRange, customPages) {
+  const copyCountRaw = Number(copies || 1);
+  const copyCount =
+    Number.isFinite(copyCountRaw) && copyCountRaw > 0
+      ? Math.floor(copyCountRaw)
+      : 1;
+
+  const finalPrintType = normalizePrintType(printType);
+  const finalPrintRange = String(printRange || "all").toLowerCase().trim();
+
+  let selectedPages = job.pages || 1;
+
+  if (finalPrintRange === "custom") {
+    const parsedPages = parseCustomPages(customPages, job.pages || 1);
+    selectedPages = parsedPages.length;
+  }
+
+  if (!selectedPages || selectedPages <= 0) {
+    selectedPages = 1;
+  }
+
+  const isDuplex =
+    finalPrintType === "duplex_long" || finalPrintType === "duplex_short";
 
   const billableUnits = isDuplex ? Math.ceil(selectedPages / 2) : selectedPages;
 
@@ -103,17 +163,20 @@ function calculateAmount(job, copies, printType, printRange, customPages) {
     billableUnits,
     rate,
     amount,
+    copyCount,
+    printType: finalPrintType,
+    printRange: finalPrintRange === "custom" ? "custom" : "all",
   };
 }
 
 app.get("/", (req, res) => {
-  res.send("Falguni Xerox Backend Running");
+  res.send("Falguni Xerox Backend Running - Adobe Duplex V7");
 });
 
 app.get("/api/health", (req, res) => {
   res.json({
     success: true,
-    message: "Falguni Xerox Backend Running",
+    message: "Falguni Xerox Backend Running - Adobe Duplex V7",
     time: new Date().toISOString(),
     razorpayConfigured: Boolean(
       process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
@@ -210,10 +273,10 @@ app.post("/api/jobs/:jobId/cash", (req, res) => {
     ...jobs[jobId],
     token,
     status: "pending_print",
-    copies: Number(copies || 1),
-    printType: printType || "single",
-    printRange: printRange || "all",
-    customPages: customPages || "",
+    copies: result.copyCount,
+    printType: result.printType,
+    printRange: result.printRange,
+    customPages: result.printRange === "custom" ? String(customPages || "") : "",
     selectedPages: result.selectedPages,
     billableUnits: result.billableUnits,
     rate: result.rate,
@@ -282,10 +345,10 @@ app.post("/api/jobs/:jobId/pay/checkout-order", async (req, res) => {
     jobs[jobId] = {
       ...jobs[jobId],
       status: "razorpay_pending",
-      copies: Number(copies || 1),
-      printType: printType || "single",
-      printRange: printRange || "all",
-      customPages: customPages || "",
+      copies: result.copyCount,
+      printType: result.printType,
+      printRange: result.printRange,
+      customPages: result.printRange === "custom" ? String(customPages || "") : "",
       selectedPages: result.selectedPages,
       billableUnits: result.billableUnits,
       rate: result.rate,
@@ -571,5 +634,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT} - Adobe Duplex V7`);
 });
