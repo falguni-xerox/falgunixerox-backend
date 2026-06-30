@@ -9,11 +9,11 @@ import { PDFDocument } from "pdf-lib";
 const app = express();
 
 const PORT = process.env.PORT || 10000;
-
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://falgunixerox.in";
-
 const BACKEND_URL =
   process.env.BACKEND_URL || "https://falgunixerox-backend.onrender.com";
+
+const PRINT_LEASE_MS = 2 * 60 * 1000;
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -38,10 +38,7 @@ app.use(
 app.use(express.json());
 
 const uploadDir = "/tmp/uploads";
-
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const jobs = {};
 
@@ -51,7 +48,6 @@ const storage = multer.diskStorage({
     const safeName = file.originalname
       .replace(/\s+/g, "_")
       .replace(/[^a-zA-Z0-9._-]/g, "");
-
     cb(null, `${Date.now()}-${safeName}`);
   },
 });
@@ -60,6 +56,14 @@ const upload = multer({
   storage,
   limits: { fileSize: 100 * 1024 * 1024 },
 });
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function makeToken(existingToken) {
+  return existingToken || Math.floor(1000 + Math.random() * 9000);
+}
 
 function normalizePrintType(printType) {
   const value = String(printType || "single").toLowerCase().trim();
@@ -92,7 +96,6 @@ function normalizePrintType(printType) {
 function parseCustomPages(customPages, totalPages) {
   const pages = new Set();
   const text = String(customPages || "").trim();
-
   if (!text) return [];
 
   text.split(",").forEach((part) => {
@@ -107,19 +110,11 @@ function parseCustomPages(customPages, totalPages) {
       if (Number.isInteger(startNum) && Number.isInteger(endNum)) {
         const start = Math.max(1, Math.min(startNum, endNum));
         const end = Math.min(totalPages, Math.max(startNum, endNum));
-
-        for (let i = start; i <= end; i++) {
-          pages.add(i);
-        }
+        for (let i = start; i <= end; i++) pages.add(i);
       }
     } else {
       const pageNum = Number(clean);
-
-      if (
-        Number.isInteger(pageNum) &&
-        pageNum >= 1 &&
-        pageNum <= totalPages
-      ) {
+      if (Number.isInteger(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
         pages.add(pageNum);
       }
     }
@@ -145,17 +140,13 @@ function calculateAmount(job, copies, printType, printRange, customPages) {
     selectedPages = parsedPages.length;
   }
 
-  if (!selectedPages || selectedPages <= 0) {
-    selectedPages = 1;
-  }
+  if (!selectedPages || selectedPages <= 0) selectedPages = 1;
 
   const isDuplex =
     finalPrintType === "duplex_long" || finalPrintType === "duplex_short";
 
   const billableUnits = isDuplex ? Math.ceil(selectedPages / 2) : selectedPages;
-
   const rate = selectedPages <= 5 ? 5 : isDuplex ? 3.5 : 3;
-
   const amount = Math.round(billableUnits * rate * copyCount);
 
   return {
@@ -170,14 +161,14 @@ function calculateAmount(job, copies, printType, printRange, customPages) {
 }
 
 app.get("/", (req, res) => {
-  res.send("Falguni Xerox Backend Running - Adobe Duplex V7");
+  res.send("Falguni Xerox Backend Running - V5.0 Stable");
 });
 
 app.get("/api/health", (req, res) => {
   res.json({
     success: true,
-    message: "Falguni Xerox Backend Running - Adobe Duplex V7",
-    time: new Date().toISOString(),
+    message: "Falguni Xerox Backend Running - V5.0 Stable",
+    time: nowIso(),
     razorpayConfigured: Boolean(
       process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
     ),
@@ -186,9 +177,7 @@ app.get("/api/health", (req, res) => {
 
 app.post("/api/upload", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "File not found" });
-    }
+    if (!req.file) return res.status(400).json({ error: "File not found" });
 
     let pages = 1;
 
@@ -221,13 +210,15 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       payment: null,
       razorpayOrderId: null,
       razorpayPaymentId: null,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso(),
       cashCreatedAt: null,
       cashPaidAt: null,
       onlineCreatedAt: null,
       razorpayPaidAt: null,
       printingStartedAt: null,
       printedAt: null,
+      reprintAt: null,
+      printAttempts: 0,
     };
 
     return res.json({
@@ -253,10 +244,7 @@ app.post("/api/jobs/:jobId/cash", (req, res) => {
   const jobId = req.params.jobId;
 
   if (!jobs[jobId]) {
-    return res.status(404).json({
-      success: false,
-      error: "Job not found",
-    });
+    return res.status(404).json({ success: false, error: "Job not found" });
   }
 
   const result = calculateAmount(
@@ -267,7 +255,7 @@ app.post("/api/jobs/:jobId/cash", (req, res) => {
     customPages
   );
 
-  const token = jobs[jobId].token || Math.floor(1000 + Math.random() * 9000);
+  const token = makeToken(jobs[jobId].token);
 
   jobs[jobId] = {
     ...jobs[jobId],
@@ -282,20 +270,14 @@ app.post("/api/jobs/:jobId/cash", (req, res) => {
     rate: result.rate,
     amount: result.amount,
     price: result.amount,
-    payment: {
-      method: "cash",
-      status: "paid",
-    },
-    cashCreatedAt: jobs[jobId].cashCreatedAt || new Date().toISOString(),
-    cashPaidAt: new Date().toISOString(),
+    payment: { method: "cash", status: "paid" },
+    cashCreatedAt: jobs[jobId].cashCreatedAt || nowIso(),
+    cashPaidAt: nowIso(),
+    printingStartedAt: null,
+    printedAt: null,
   };
 
-  return res.json({
-    success: true,
-    token,
-    jobId,
-    amount: result.amount,
-  });
+  return res.json({ success: true, token, jobId, amount: result.amount });
 });
 
 app.post("/api/jobs/:jobId/pay/checkout-order", async (req, res) => {
@@ -304,10 +286,7 @@ app.post("/api/jobs/:jobId/pay/checkout-order", async (req, res) => {
     const jobId = req.params.jobId;
 
     if (!jobs[jobId]) {
-      return res.status(404).json({
-        success: false,
-        error: "Job not found",
-      });
+      return res.status(404).json({ success: false, error: "Job not found" });
     }
 
     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
@@ -326,20 +305,14 @@ app.post("/api/jobs/:jobId/pay/checkout-order", async (req, res) => {
     );
 
     if (result.amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid amount",
-      });
+      return res.status(400).json({ success: false, error: "Invalid amount" });
     }
 
     const order = await razorpay.orders.create({
       amount: result.amount * 100,
       currency: "INR",
       receipt: jobId.slice(0, 40),
-      notes: {
-        jobId,
-        shop: "Falguni Xerox",
-      },
+      notes: { jobId, shop: "Falguni Xerox" },
     });
 
     jobs[jobId] = {
@@ -360,7 +333,7 @@ app.post("/api/jobs/:jobId/pay/checkout-order", async (req, res) => {
         status: "created",
         orderId: order.id,
       },
-      onlineCreatedAt: new Date().toISOString(),
+      onlineCreatedAt: nowIso(),
     };
 
     return res.json({
@@ -392,16 +365,13 @@ app.post("/api/payment/verify", (req, res) => {
     } = req.body;
 
     if (!jobs[jobId]) {
-      return res.status(404).json({
-        success: false,
-        error: "Job not found",
-      });
+      return res.status(404).json({ success: false, error: "Job not found" });
     }
 
     if (
-      jobs[jobId].status === "printed" ||
       jobs[jobId].status === "pending_print" ||
-      jobs[jobId].status === "printing"
+      jobs[jobId].status === "printing" ||
+      jobs[jobId].status === "printed"
     ) {
       return res.json({
         success: true,
@@ -412,10 +382,7 @@ app.post("/api/payment/verify", (req, res) => {
     }
 
     if (jobs[jobId].razorpayOrderId !== razorpay_order_id) {
-      return res.status(400).json({
-        success: false,
-        error: "Order ID mismatch",
-      });
+      return res.status(400).json({ success: false, error: "Order ID mismatch" });
     }
 
     const expectedSignature = crypto
@@ -430,7 +397,7 @@ app.post("/api/payment/verify", (req, res) => {
       });
     }
 
-    const token = jobs[jobId].token || Math.floor(1000 + Math.random() * 9000);
+    const token = makeToken(jobs[jobId].token);
 
     jobs[jobId] = {
       ...jobs[jobId],
@@ -443,7 +410,9 @@ app.post("/api/payment/verify", (req, res) => {
         paymentId: razorpay_payment_id,
       },
       razorpayPaymentId: razorpay_payment_id,
-      razorpayPaidAt: new Date().toISOString(),
+      razorpayPaidAt: nowIso(),
+      printingStartedAt: null,
+      printedAt: null,
     };
 
     return res.json({
@@ -463,13 +432,23 @@ app.post("/api/payment/verify", (req, res) => {
 });
 
 app.get("/api/jobs/pending", (req, res) => {
-  const pendingJobs = Object.values(jobs).filter(
-    (job) => job.status === "pending_print"
-  );
+  const now = Date.now();
+
+  const pendingJobs = Object.values(jobs).filter((job) => {
+    if (job.status === "pending_print") return true;
+
+    if (job.status === "printing" && job.printingStartedAt) {
+      const started = new Date(job.printingStartedAt).getTime();
+      return now - started > PRINT_LEASE_MS;
+    }
+
+    return false;
+  });
 
   pendingJobs.forEach((job) => {
     job.status = "printing";
-    job.printingStartedAt = new Date().toISOString();
+    job.printingStartedAt = nowIso();
+    job.printAttempts = Number(job.printAttempts || 0) + 1;
   });
 
   return res.json({
@@ -482,19 +461,13 @@ app.post("/api/jobs/:jobId/printed", (req, res) => {
   const jobId = req.params.jobId;
 
   if (!jobs[jobId]) {
-    return res.status(404).json({
-      success: false,
-      error: "Job not found",
-    });
+    return res.status(404).json({ success: false, error: "Job not found" });
   }
 
   jobs[jobId].status = "printed";
-  jobs[jobId].printedAt = new Date().toISOString();
+  jobs[jobId].printedAt = nowIso();
 
-  return res.json({
-    success: true,
-    jobId,
-  });
+  return res.json({ success: true, jobId });
 });
 
 app.get("/api/jobs/recent", (req, res) => {
@@ -503,14 +476,18 @@ app.get("/api/jobs/recent", (req, res) => {
     .sort((a, b) => {
       const ta = new Date(
         a.razorpayPaidAt ||
+          a.cashPaidAt ||
           a.cashCreatedAt ||
+          a.reprintAt ||
           a.printingStartedAt ||
           a.createdAt
       ).getTime();
 
       const tb = new Date(
         b.razorpayPaidAt ||
+          b.cashPaidAt ||
           b.cashCreatedAt ||
+          b.reprintAt ||
           b.printingStartedAt ||
           b.createdAt
       ).getTime();
@@ -519,10 +496,7 @@ app.get("/api/jobs/recent", (req, res) => {
     })
     .slice(0, 30);
 
-  return res.json({
-    success: true,
-    jobs: recentJobs,
-  });
+  return res.json({ success: true, jobs: recentJobs });
 });
 
 app.get("/api/admin/orders", (req, res) => {
@@ -532,7 +506,9 @@ app.get("/api/admin/orders", (req, res) => {
       const ta = new Date(
         a.razorpayPaidAt ||
           a.onlineCreatedAt ||
+          a.cashPaidAt ||
           a.cashCreatedAt ||
+          a.reprintAt ||
           a.printingStartedAt ||
           a.createdAt
       ).getTime();
@@ -540,7 +516,9 @@ app.get("/api/admin/orders", (req, res) => {
       const tb = new Date(
         b.razorpayPaidAt ||
           b.onlineCreatedAt ||
+          b.cashPaidAt ||
           b.cashCreatedAt ||
+          b.reprintAt ||
           b.printingStartedAt ||
           b.createdAt
       ).getTime();
@@ -556,75 +534,60 @@ app.post("/api/admin/orders/:jobId/status", (req, res) => {
   const { status } = req.body;
 
   if (!jobs[jobId]) {
-    return res.status(404).json({
-      success: false,
-      error: "Job not found",
-    });
+    return res.status(404).json({ success: false, error: "Job not found" });
   }
 
   jobs[jobId].status = status;
 
   if (status === "printed" || status === "done") {
-    jobs[jobId].printedAt = new Date().toISOString();
+    jobs[jobId].printedAt = nowIso();
   }
 
-  return res.json({
-    success: true,
-    jobId,
-    status,
-  });
+  if (status === "pending_print") {
+    jobs[jobId].printingStartedAt = null;
+    jobs[jobId].printedAt = null;
+  }
+
+  return res.json({ success: true, jobId, status });
 });
 
 app.post("/api/admin/jobs/:jobId/cash-paid", (req, res) => {
   const jobId = req.params.jobId;
 
   if (!jobs[jobId]) {
-    return res.status(404).json({
-      success: false,
-      error: "Job not found",
-    });
+    return res.status(404).json({ success: false, error: "Job not found" });
   }
 
+  jobs[jobId].token = makeToken(jobs[jobId].token);
   jobs[jobId].status = "pending_print";
-  jobs[jobId].payment = {
-    method: "cash",
-    status: "paid",
-  };
-  jobs[jobId].cashPaidAt = new Date().toISOString();
+  jobs[jobId].payment = { method: "cash", status: "paid" };
+  jobs[jobId].cashPaidAt = nowIso();
+  jobs[jobId].printingStartedAt = null;
+  jobs[jobId].printedAt = null;
 
-  return res.json({
-    success: true,
-    jobId,
-  });
+  return res.json({ success: true, jobId });
 });
 
 app.post("/api/admin/jobs/:jobId/reprint", (req, res) => {
   const jobId = req.params.jobId;
 
   if (!jobs[jobId]) {
-    return res.status(404).json({
-      success: false,
-      error: "Job not found",
-    });
+    return res.status(404).json({ success: false, error: "Job not found" });
   }
 
   jobs[jobId].status = "pending_print";
-  jobs[jobId].reprintAt = new Date().toISOString();
+  jobs[jobId].reprintAt = nowIso();
+  jobs[jobId].printingStartedAt = null;
+  jobs[jobId].printedAt = null;
 
-  return res.json({
-    success: true,
-    jobId,
-  });
+  return res.json({ success: true, jobId });
 });
 
 app.use("/uploads", express.static(uploadDir));
 
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
-    return res.status(400).json({
-      success: false,
-      error: err.message,
-    });
+    return res.status(400).json({ success: false, error: err.message });
   }
 
   return res.status(500).json({
@@ -634,5 +597,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT} - Adobe Duplex V7`);
+  console.log(`Server running on port ${PORT} - V5.0 Stable`);
 });
